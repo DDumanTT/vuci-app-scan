@@ -1,0 +1,7 @@
+{
+  "network/scan": {
+    "title": "Scan",
+    "view": "vuci-app-scan",
+    "index": 90
+  }
+}
