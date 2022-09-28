@@ -1,0 +1,164 @@
+#! /usr/bin/env lua
+json = require("json")
+
+function runShellCommand( shellCommand, resultHandler )
+    -- Run a (bash) shell command in the host operating system.  Note
+    -- that we can't receive the shell command output directly, but we
+    -- CAN tell the host OS to redirect the output to a (temp) file.
+    -- Note that we can't use 'mktemp': We can't receive its output,
+    -- which is its name/path!  So we'll have to provide a path.
+    local tempFile = "/tmp/lua-shell-cmd"
+
+    -- Attempt to execute the given shell command, instructing the host
+    -- OS to redirect its output to a results file...
+    if not os.execute( shellCommand.." > "..tempFile ) then
+        error( "Execution of OS command '"..shellCommand.."' failed!" )
+    end
+
+    -- ...Then open the file.
+    if not io.input( tempFile ) then
+        error( "Cannot open file '"..tempFile..
+            "' containing OS command results!" )
+    end
+
+    -- The shell command executed without an error, producing a result
+    -- file of the command's output AND we were able to open the file.
+    -- Loop through each line of output, calling a handler to parse it.
+    for line in io.lines() do
+        -- Screen out blank (empty) lines, and only pass non-blank
+        -- lines to the result handler function for processing.
+        if line:match( "%w" ) then
+            -- Call the result handler function with the line.
+            resultHandler = resultHandler( line )
+
+            -- This function will return a new result handler if
+            -- additional output is expected, or nil if no additional
+            -- parsing is needed/expected.  If nil, break out of this
+            -- loop and throw away any remaining results lines.
+            if not resultHandler then break end
+        end
+    end
+
+    -- Close the output result file and remove it from the host file system.
+    io.input():close()
+    os.remove( tempFile )
+end
+
+function ScanNetworkForHosts ( network )
+    local AllDiscoveredHosts = { }
+    local result = {}
+
+    local shellCommand = "nmap -n -sP "..network
+
+    local resultHandlerInitial
+    local resultHandlerMiddle
+    local resultHandlerFinal
+    local parseEnd
+
+
+    resultHandlerInitial = function ( line )
+        if line:match("Nmap done") then
+            parseEnd(line)
+            return
+        end
+
+        local ipNumber = line:match( "Nmap scan report for (%S+)" )
+
+        if ipNumber then
+            AllDiscoveredHosts[ #AllDiscoveredHosts + 1 ] =
+                { ipNumber=ipNumber }
+
+            return resultHandlerMiddle
+        end
+
+
+        if not line:match( "Starting Nmap" ) then
+            error( "Could not detect start of 'nmap' scan!" )
+        end
+
+        return resultHandlerInitial
+    end
+
+
+    resultHandlerMiddle = function ( line )
+        local status = line:match( "Host is (%w+)" )
+
+        if not status then
+            error( "Network scan failed for host with IP '"..
+                AllDiscoveredHosts[ #AllDiscoveredHosts ].ipNumber.."'! " )
+        end
+
+        AllDiscoveredHosts[ #AllDiscoveredHosts ].status = status
+
+        return resultHandlerFinal
+    end
+
+
+    resultHandlerFinal = function ( line )
+        if line:match("Nmap done") then
+            parseEnd(line)
+            return
+        end
+        
+        local macAddr, vendor = line:match( "MAC Address: (%S+)%s+(.+)" )
+
+        if macAddr then
+            AllDiscoveredHosts[ #AllDiscoveredHosts ].macAddr = macAddr:upper()
+            AllDiscoveredHosts[ #AllDiscoveredHosts ].vendor  = vendor
+
+            return resultHandlerInitial
+        end
+
+        if AllDiscoveredHosts[1].ipNumber and
+            not AllDiscoveredHosts[1].macAddr then
+                error( "NMAP is not returning MAC addresses;"..
+                    " is 'sudo' working?" )
+        end
+
+        if not line:match( "Nmap done" ) then
+            error( "Could not detect end of 'nmap' scan!" )
+        end
+
+    end
+
+    parseEnd = function ( line )
+        local ipsCount = line:match("Nmap done: (%d+)")
+        local upCount = line:match("%((%d+) host")
+        local elapsed = line:match("scanned in (.+) sec")
+
+        result.scanned = ipsCount
+        result.upCount = upCount
+        result.elapsed = elapsed
+    end
+
+    runShellCommand( shellCommand, resultHandlerInitial )
+    result.hosts = AllDiscoveredHosts
+    return result
+end
+
+function main ()
+    local argparse = require "argparse"
+
+    local parser = argparse()
+    parser:option "-n" "--network"
+    local args = parser:parse()
+
+    if args.network:find("%d+%.%d+%.%d+%.%d+%/%d+") == nil then
+        error("Invalid network")
+    end
+
+    local tempFile = "/tmp/lua-shell-cmd-out"
+
+    local file = io.open( tempFile, "w" )
+    if not file then
+        error("Cannot open " .. tempFile)
+    end
+
+    local DiscoveredHosts = {}
+    DiscoveredHosts = ScanNetworkForHosts(args.network)
+
+    file:write(json.encode(DiscoveredHosts))
+    file:close()
+end
+
+main()
