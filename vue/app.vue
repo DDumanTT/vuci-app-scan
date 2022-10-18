@@ -17,6 +17,9 @@
         <a-form-model-item >
           <a-button :disabled="loading" type="primary" @click="scanNetwork">Scan</a-button>
         </a-form-model-item>
+        <a-form-model-item>
+          <a-alert v-if="error" type="error" :message="this.error" banner />
+        </a-form-model-item>
       </a-form-model>
     </div>
     <a-table :columns="columns" :data-source="data.hosts" :row-key="row => row.ipNumber" :loading="loading">
@@ -30,6 +33,8 @@ export default {
     return {
       data: [],
       loading: false,
+      tries: 0,
+      error: '',
       form: {
         host: '',
         subnet: ''
@@ -90,6 +95,8 @@ export default {
     scanNetwork () {
       this.$refs.form.validate((valid) => {
         if (!valid) return
+        this.tries = 0
+        this.error = ''
         this.$rpc
           .call('scan', 'scan', {
             network: `${this.form.host}/${this.form.subnet}`
@@ -101,8 +108,19 @@ export default {
       })
     },
     loadNetwork () {
+      if (this.tries >= 60) {
+        this.$timer.stop('loadNetwork')
+        this.loading = false
+        this.error = 'Scan timed out (60 sec)'
+      }
+      this.tries += 1
       this.$rpc.call('scan', 'get').then((r) => {
         if (!r.result) return
+        if (r.result === 'failed') {
+          this.$timer.stop('loadNetwork')
+          this.loading = false
+          this.error = 'Scan failed'
+        }
         this.data = JSON.parse(r.result)
         this.data.hosts.forEach((r, i) => (r.number = i + 1))
         this.$timer.stop('loadNetwork')
